@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="theme-color" content="#101820">
+<title>Iranian AR Character — v1.0.1</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#101820;color:#fff;font-family:system-ui,-apple-system,sans-serif}#start{position:fixed;inset:0;display:grid;place-items:center;background:linear-gradient(145deg,#101820,#193a42);z-index:5;padding:24px}#panel{max-width:440px;text-align:center;background:#17252dcc;border:1px solid #ffffff20;border-radius:24px;padding:28px;backdrop-filter:blur(12px)}h1{font-size:24px;margin:0 0 10px}p{line-height:1.9;color:#d4e0e3;font-size:14px}button{border:0;border-radius:14px;background:#42d6c5;color:#062a2c;font-size:16px;font-weight:800;padding:14px 20px;cursor:pointer}button:disabled{opacity:.45}#status{position:fixed;top:12px;left:12px;right:12px;text-align:center;z-index:3;pointer-events:none;text-shadow:0 2px 8px #000;background:#0007;padding:9px;border-radius:12px;font-size:13px}#controls{position:fixed;bottom:18px;left:12px;right:12px;display:flex;justify-content:center;gap:10px;z-index:3;flex-wrap:wrap}#controls button{font-size:13px;padding:11px 14px}#fallback{position:fixed;inset:0;display:none;place-items:center;text-align:center;padding:25px;background:#101820;z-index:4}canvas{display:block}#hint{font-size:12px;opacity:.8}
+</style>
+</head>
+<body>
+<div id="start"><div id="panel"><h1>واقعیت افزوده | کاراکتر</h1><p>دوربین را به سمت کف زمین بگیر. وقتی سطح مناسب پیدا شد، روی «قرار دادن کاراکتر» بزن. پس از ثبت، کاراکتر در مختصات محیط ثابت می‌ماند و انیمیشن فقط یک‌بار پخش می‌شود.</p><p id="support">در حال بررسی پشتیبانی مرورگر…</p><button id="begin">شروع تجربه AR</button><p id="hint">نیازمند HTTPS و مرورگر اندرویدی سازگار با WebXR AR</p></div></div>
+<div id="status">آماده</div><div id="controls" hidden><button id="place">قرار دادن کاراکتر</button><button id="replay">پخش دوباره</button><button id="fade">محو کردن</button></div><div id="fallback"></div>
+<video id="clip" src="character-green-screen.mp4" playsinline muted preload="auto" crossorigin="anonymous" style="display:none"></video>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js';
+import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/webxr/ARButton.js';
+const $=id=>document.getElementById(id), status=$('status'), clip=$('clip');
+let renderer,scene,camera,reticle,actor,hitSource=null,hitSourceRequested=false,placed=false,fadeStart=0,animDone=false;
+const HEIGHT=2.625; // 1.5 x assumed 1.75 m reference height
+$('support').textContent=('xr' in navigator)?'مرورگر قابلیت WebXR را دارد؛ سازگاری AR هنگام شروع بررسی می‌شود.':'این مرورگر WebXR را ارائه نمی‌کند.';
+function say(t){status.textContent=t}
+function makeActor(){
+ const videoTexture=new THREE.VideoTexture(clip); videoTexture.colorSpace=THREE.SRGBColorSpace; videoTexture.minFilter=THREE.LinearFilter; videoTexture.magFilter=THREE.LinearFilter;
+ // Chroma-key shader: removes green backdrop while preserving soft edges.
+ const material=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:{map:{value:videoTexture},keyColor:{value:new THREE.Color(0.0,1.0,0.0)},similarity:{value:0.34},smoothness:{value:0.12},opacity:{value:1.0}},vertexShader:`varying vec2 vUv; void main(){vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,fragmentShader:`uniform sampler2D map; uniform vec3 keyColor; uniform float similarity; uniform float smoothness; uniform float opacity; varying vec2 vUv; void main(){vec4 c=texture2D(map,vUv); float d=distance(c.rgb,keyColor); float a=smoothstep(similarity,similarity+smoothness,d); gl_FragColor=vec4(c.rgb,a*c.a*opacity); if(gl_FragColor.a<0.02) discard;}`});
+ // Portrait video plane; approximate 2.625 m tall. This is a 2D cutout, not volumetric geometry.
+ const aspect=360/640; const mesh=new THREE.Mesh(new THREE.PlaneGeometry(HEIGHT*aspect,HEIGHT),material); mesh.name='videoCutout';
+ const group=new THREE.Group(); group.add(mesh); group.userData.material=material; group.userData.mesh=mesh; group.visible=false; return group;
+}
+async function start(){
+ $('begin').disabled=true;
+ if(!navigator.xr){$('fallback').style.display='grid';$('fallback').innerHTML='<div><h2>WebXR در این مرورگر در دسترس نیست</h2><p>صفحه را با Chrome اندروید و از طریق HTTPS باز کن. GitHub Pages مناسب است؛ پیش‌نمایش داخل فایل یا HTTP معمولی کافی نیست.</p><button onclick="location.reload()">تلاش دوباره</button></div>'; $('begin').disabled=false; return;}
+ try{
+  const supported=await navigator.xr.isSessionSupported('immersive-ar'); if(!supported) throw new Error('این دستگاه/مرورگر immersive-ar را پشتیبانی نمی‌کند.');
+  scene=new THREE.Scene(); camera=new THREE.PerspectiveCamera();
+  renderer=new THREE.WebGLRenderer({antialias:true,alpha:true}); renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setSize(innerWidth,innerHeight); renderer.xr.enabled=true; renderer.xr.setReferenceSpaceType('local'); document.body.appendChild(renderer.domElement);
+  scene.add(new THREE.HemisphereLight(0xffffff,0x667788,2));
+  reticle=new THREE.Mesh(new THREE.RingGeometry(0.10,0.13,32),new THREE.MeshBasicMaterial({color:0x42d6c5})); reticle.rotation.x=-Math.PI/2; reticle.matrixAutoUpdate=false; reticle.visible=false; scene.add(reticle);
+  actor=makeActor(); scene.add(actor);
+  const btn=ARButton.createButton(renderer,{requiredFeatures:['hit-test'],optionalFeatures:['dom-overlay'],domOverlay:{root:document.body}}); btn.style.display='none'; document.body.appendChild(btn); btn.click();
+  renderer.xr.addEventListener('sessionstart',()=>{$('start').style.display='none';$('controls').hidden=false;say('دوربین را آرام حرکت بده تا سطح افقی پیدا شود.');});
+  renderer.xr.addEventListener('sessionend',()=>{say('جلسه AR پایان یافت. برای شروع دوباره صفحه را تازه‌سازی کن.');});
+  renderer.setAnimationLoop((time,frame)=>{
+   if(frame){const session=renderer.xr.getSession(); const ref=renderer.xr.getReferenceSpace();
+    if(!hitSourceRequested){session.requestReferenceSpace('viewer').then(viewer=>session.requestHitTestSource({space:viewer})).then(source=>{hitSource=source;}).catch(()=>say('ردیابی سطح فعال نشد.')); hitSourceRequested=true;}
+    if(hitSource&&!placed){const hits=frame.getHitTestResults(hitSource); if(hits.length){const pose=hits[0].getPose(ref); if(pose){reticle.visible=true;reticle.matrix.fromArray(pose.transform.matrix);}}else reticle.visible=false;}
+   }
+   if(fadeStart){const t=(time-fadeStart)/1400; actor.userData.material.uniforms.opacity.value=Math.max(0,1-t); if(t>=1){actor.visible=false;fadeStart=0;}}
+   renderer.render(scene,camera);
+  });
+ }catch(e){say('خطا: '+e.message);$('begin').disabled=false;}
+}
+$('begin').addEventListener('click',start);
+$('place').addEventListener('click',()=>{if(!reticle?.visible||!actor){say('هنوز سطحی پیدا نشده؛ دوربین را به سمت کف زمین بگیر.');return;} actor.position.setFromMatrixPosition(reticle.matrix); actor.quaternion.setFromRotationMatrix(reticle.matrix); actor.position.y+=HEIGHT/2; actor.visible=true; placed=true; reticle.visible=false; clip.currentTime=0; animDone=false; fadeStart=0; actor.userData.material.uniforms.opacity.value=1; clip.play().then(()=>say('کاراکتر در محل ثبت شد؛ انیمیشن یک‌بار پخش می‌شود.')).catch(()=>say('برای پخش ویدیو دوباره روی پخش بزن.')); say('موقعیت ثبت شد. برای جابه‌جایی دوربین حرکت کن؛ کاراکتر در جای خود می‌ماند.');});
+clip.addEventListener('ended',()=>{animDone=true;clip.pause();say('پخش تمام شد؛ کاراکتر در جای خود ثابت مانده است.');});
+$('replay').addEventListener('click',()=>{if(!actor||!placed)return;fadeStart=0;actor.visible=true;actor.userData.material.uniforms.opacity.value=1;clip.currentTime=0;clip.play();});
+$('fade').addEventListener('click',()=>{if(actor?.visible){clip.pause();fadeStart=performance.now();say('کاراکتر در حال محو شدن است.');}});
+addEventListener('resize',()=>{if(renderer){renderer.setSize(innerWidth,innerHeight);}});
+</script>
+</body></html>
